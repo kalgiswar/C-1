@@ -101,11 +101,13 @@ def process_frame(jpeg_bytes, metadata, mode):
         detections_to_draw = metadata.get("crowd", [])
         color = (0, 255, 255) # Yellow for Stampede
         label_prefix = "STAMPEDE"
+    elif event_type == "Person":
+        detections_to_draw = metadata.get("fight", []) # 'fight' key holds Person detections now
+        color = (0, 255, 0) # Green for Person
+        label_prefix = "Person"
     else:
-        # If no major event, maybe show crowdedness or just green boxes for debug?
-        # Let's show persons in Green if requested, or nothing.
-        # For "under a box it will say stampid", we prioritize the active event.
-        pass
+        # If no major event, show persons (which are under 'fight' key now)
+        detections_to_draw = metadata.get("fight", [])
 
     # Draw Boxes
     for d in detections_to_draw:

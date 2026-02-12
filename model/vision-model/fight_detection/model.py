@@ -51,7 +51,7 @@ class FightDetector:
                         "bbox": [x1, y1, x2, y2],
                         "confidence": conf,
                         "class_id": cls_id,
-                        "label": "Violence"
+                        "label": "Person"
                     })
         
         return detections

@@ -75,7 +75,7 @@ class MessageRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "phone_no": "919876543210",
+                "phone_no": "919443907550",
                 "message": "Hello from WhatsApp API!"
             }
         }

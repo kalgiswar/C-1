@@ -41,8 +41,8 @@ class FireDetector:
                 # Check for screens OR if confidence is very high for anything (anomaly?)
                 # For now, strictly looking for screens to catch the user's test case.
                 
-                # [DISABLED] Mock Logic: Disabled "Screen = Fire" to prevent confusion.
-                if False and conf >= conf_threshold and cls_id in self.screen_classes:
+                # [ENABLED] Logic: Detect screens to trigger Fire verification by Agent.
+                if conf >= conf_threshold and cls_id in self.screen_classes:
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
                     label = self.model.names[cls_id]
                     

@@ -31,15 +31,22 @@ load_dotenv()
 
 # Configuration
 CAMERA_ID = os.getenv("CAMERA_ID", "cam1")
-LIVESTREAM_URL = os.getenv("LIVESTREAM_URL", "ws://localhost:8000/ws/push/cam1")
+LIVESTREAM_URL = os.getenv("LIVESTREAM_URL", "ws://127.0.0.1:8000/ws/push/cam1")
 AGENT_URL = os.getenv("AGENT_URL", "http://localhost:8001/agent")
 BUFFER_SECONDS = 10
 STAMPEDE_THRESHOLD = 5 # Number of people to trigger a stampede alert
 FPS = 15
 LATITUDE = "0.0"
 LONGITUDE = "0.0"
-# Camera Index: 0 is usually the built-in webcam. 1 is often the OBS Virtual Camera.
-CAMERA_INDEX = 1 
+
+# Camera Configuration
+# Reads VISION_CAMERA_SOURCE from .env. Can be an integer (index) or string (URL).
+# Default to 0 (usually built-in webcam) if not specified.
+camera_source_env = os.getenv("VISION_CAMERA_SOURCE", "0")
+if camera_source_env.isdigit():
+    CAMERA_SOURCE = int(camera_source_env)
+else:
+    CAMERA_SOURCE = camera_source_env
 
 class VisionSystem:
     def __init__(self):
@@ -47,17 +54,32 @@ class VisionSystem:
         self.fight_detector = FightDetector()
         self.fire_detector = FireDetector()
         self.crowd_detector = CrowdDetector()
-        # self.weapon_detector = WeaponDetector()
         
-        print(f"Opening Camera Index: {CAMERA_INDEX} (Targeting OBS Virtual Camera)")
-        self.cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+        print(f"Opening Camera Source: {CAMERA_SOURCE}")
+        self.cap = None
+        self.width = 640
+        self.height = 480
         
-        if not self.cap.isOpened():
-            print(f"Warning: Could not open camera {CAMERA_INDEX}. Trying default 0...")
-            self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-            
-        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
-        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
+        # Retry loop for camera connection
+        while True:
+            try:
+                if isinstance(CAMERA_SOURCE, int):
+                    self.cap = cv2.VideoCapture(CAMERA_SOURCE, cv2.CAP_DSHOW)
+                else:
+                    self.cap = cv2.VideoCapture(CAMERA_SOURCE)
+                
+                if self.cap and self.cap.isOpened():
+                    print(f"Successfully connected to camera: {CAMERA_SOURCE}")
+                    self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
+                    self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
+                    break
+                else:
+                    print(f"Waiting for camera {CAMERA_SOURCE}... (Retrying in 2s)")
+                    if self.cap: self.cap.release()
+                    time.sleep(2)
+            except Exception as e:
+                print(f"Camera connection error: {e}. Retrying...")
+                time.sleep(2)
         
         self.buffer_size = FPS * BUFFER_SECONDS
         self.frame_buffer = deque(maxlen=self.buffer_size)
@@ -142,113 +164,115 @@ class VisionSystem:
     async def run(self):
         print(f"Connecting to Livestream: {LIVESTREAM_URL}")
         
-        async for websocket in websockets.connect(LIVESTREAM_URL):
-            print("Connected to Livestream WebSocket.")
+        while self.is_running:
             try:
-                while self.is_running:
-                    # Get latest frame from thread
-                    frame = None
-                    with self.frame_lock:
-                        if self.latest_frame is not None:
-                            frame = self.latest_frame.copy()
+                async with websockets.connect(LIVESTREAM_URL) as websocket:
+                    print("Connected to Livestream WebSocket.")
+                    while self.is_running:
+                        # Get latest frame from thread
+                        frame = None
+                        with self.frame_lock:
+                            if self.latest_frame is not None:
+                                frame = self.latest_frame.copy()
+                                
+                        if frame is None:
+                            # No frame yet
+                            await asyncio.sleep(0.1)
+                            continue
                             
-                    if frame is None:
-                        # No frame yet
-                        await asyncio.sleep(0.1)
-                        continue
+                        # Run Detections in parallel
+                        # Using asyncio.gather to run all detections concurrently
+                        fight_detections, fire_detections, crowd_detections, weapon_detections = await asyncio.gather(
+                            asyncio.to_thread(self.fight_detector.detect, frame, conf_threshold=0.75),
+                            asyncio.to_thread(self.fire_detector.detect, frame, conf_threshold=0.25),
+                            asyncio.to_thread(self.crowd_detector.detect, frame, conf_threshold=0.50),
+                            # asyncio.to_thread(self.weapon_detector.detect, frame, conf_threshold=0.65)
+                            asyncio.sleep(0, result=[]) # Return empty list for weapon detections
+                        )
                         
-                    # Run Detections in parallel
-                    # Using asyncio.gather to run all detections concurrently
-                    fight_detections, fire_detections, crowd_detections, weapon_detections = await asyncio.gather(
-                        asyncio.to_thread(self.fight_detector.detect, frame, conf_threshold=0.75),
-                        asyncio.to_thread(self.fire_detector.detect, frame, conf_threshold=0.40),
-                        asyncio.to_thread(self.crowd_detector.detect, frame, conf_threshold=0.50),
-                        # asyncio.to_thread(self.weapon_detector.detect, frame, conf_threshold=0.65)
-                        asyncio.sleep(0, result=[]) # Return empty list for weapon detections
-                    )
-                    
-                    # Prepare Metadata
-                    import json
-                    metadata = {
-                        "type": "detections",
-                        "fight": fight_detections,
-                        "fire": fire_detections,
-                        "crowd": crowd_detections,
-                        "weapon": weapon_detections,
-                        "event_type": None # Placeholder, will be updated below
-                    }
+                        # Prepare Metadata
+                        import json
+                        metadata = {
+                            "type": "detections",
+                            "fight": fight_detections,
+                            "fire": fire_detections,
+                            "crowd": crowd_detections,
+                            "weapon": weapon_detections,
+                            "event_type": None # Placeholder, will be updated below
+                        }
 
-                    # --- Event Detection Logic (Moved Up) ---
-                    # Select the detection with the highest confidence score
-                    event_type = None
-                    max_confidence = 0.0
-                    
-                    for det in fight_detections:
-                        if det["confidence"] > max_confidence:
-                            max_confidence = det["confidence"]
-                            event_type = "Violence"
-                            
-                    # Prioritize Fire
-                    if fire_detections:
-                        fire_conf = max(d["confidence"] for d in fire_detections)
-                        max_confidence = fire_conf
-                        event_type = "Fire"
-
-                    # Check for Stampede
-                    if not event_type and len(crowd_detections) >= STAMPEDE_THRESHOLD:
-                         event_type = "Stampede"
-                         if crowd_detections:
-                             max_confidence = max(d["confidence"] for d in crowd_detections)
-
-                    # Update Metadata with calculated event type
-                    metadata["event_type"] = event_type
-                    # ----------------------------------------
-                    
-                    # Send Metadata (Text)
-                    try:
-                        await websocket.send(json.dumps(metadata))
-                    except Exception as e:
-                        print(f"WS Send JSON Error: {e}")
-                        break
-
-                    
-                    # Logic was moved up. We just use the calculated values now.
-                    # if event_type: ... (logic continues below)
-
-                    # for det in weapon_detections:
-                    #     if det["confidence"] > max_confidence:
-                    #         max_confidence = det["confidence"]
-                    #         event_type = "Weapon"
-
-                    if event_type:
-                        current_time = time.time()
-                        if current_time - self.last_event_time > self.cooldown_seconds:
-                            self.last_event_time = current_time
-                            
-                            # Get snapshot of buffer safely
-                            with self.frame_lock:
-                                snapshot = list(self.frame_buffer)
+                        # --- Event Detection Logic (Moved Up) ---
+                        # Select the detection with the highest confidence score
+                        event_type = None
+                        max_confidence = 0.0
+                        
+                        for det in fight_detections:
+                            label = det.get("label")
+                            if (label == "Violence" or label == "Person") and det["confidence"] > max_confidence:
+                                max_confidence = det["confidence"]
+                                event_type = label
                                 
-                            # Annotate the last frame in snapshot
-                            if snapshot:
-                                rec_frame = snapshot[-1].copy()
-                                cv2.putText(rec_frame, f"ALERT: {event_type}", (50, 50),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
-                                snapshot[-1] = rec_frame
+                        # Prioritize Fire
+                        if fire_detections:
+                            fire_conf = max(d["confidence"] for d in fire_detections)
+                            max_confidence = fire_conf
+                            event_type = "Fire"
+
+                        # Check for Stampede
+                        if not event_type and len(crowd_detections) >= STAMPEDE_THRESHOLD:
+                             event_type = "Stampede"
+                             if crowd_detections:
+                                 max_confidence = max(d["confidence"] for d in crowd_detections)
+
+                        # Update Metadata with calculated event type
+                        metadata["event_type"] = event_type
+                        # ----------------------------------------
+                        
+                        # Send Metadata (Text)
+                        try:
+                            await websocket.send(json.dumps(metadata))
+                        except Exception as e:
+                            print(f"WS Send JSON Error: {e}")
+                            break
+
+                        
+                        # Logic was moved up. We just use the calculated values now.
+                        # if event_type: ... (logic continues below)
+
+                        # for det in weapon_detections:
+                        #     if det["confidence"] > max_confidence:
+                        #         max_confidence = det["confidence"]
+                        #         event_type = "Weapon"
+
+                        if event_type:
+                            current_time = time.time()
+                            if current_time - self.last_event_time > self.cooldown_seconds:
+                                self.last_event_time = current_time
                                 
-                            self.trigger_event(snapshot, event_type)
+                                # Get snapshot of buffer safely
+                                with self.frame_lock:
+                                    snapshot = list(self.frame_buffer)
+                                    
+                                # Annotate the last frame in snapshot
+                                if snapshot:
+                                    rec_frame = snapshot[-1].copy()
+                                    cv2.putText(rec_frame, f"ALERT: {event_type}", (50, 50),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                                    snapshot[-1] = rec_frame
+                                    
+                                self.trigger_event(snapshot, event_type)
 
-                    # Send Clean Frame (Binary)
-                    try:
-                        ret_enc, buffer = cv2.imencode('.jpg', frame)
-                        if ret_enc:
-                            await websocket.send(buffer.tobytes())
-                    except Exception as e:
-                        print(f"WS Send Image Error: {e}")
-                        break # Break inner loop to reconnect
+                        # Send Clean Frame (Binary)
+                        try:
+                            ret_enc, buffer = cv2.imencode('.jpg', frame)
+                            if ret_enc:
+                                await websocket.send(buffer.tobytes())
+                        except Exception as e:
+                            print(f"WS Send Image Error: {e}")
+                            break # Break inner loop to reconnect
 
-                    # Small sleep to yield to event loop
-                    await asyncio.sleep(0.01)
+                        # Small sleep to yield to event loop
+                        await asyncio.sleep(0.01)
             except websockets.exceptions.ConnectionClosed:
                 print("WebSocket connection closed. Reconnecting...")
                 await asyncio.sleep(3)
