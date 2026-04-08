@@ -30,8 +30,8 @@ export default function App() {
   const cameraFeeds: { id: string; location: string; status: 'online' | 'offline'; streamUrl: string }[] = [
     { id: 'Drone Cam 1', location: 'University Building (UB) - Normal', status: 'online', streamUrl: 'http://localhost:8000/video_feed/cam1?mode=none' },
     { id: 'Drone Cam 2', location: 'Java Canteen - Fire Detection', status: 'online', streamUrl: 'http://localhost:8000/video_feed/cam2?mode=fire' },
-    { id: 'Drone Cam 3', location: 'Tech Park 1 - Fight Detection', status: 'online', streamUrl: 'http://localhost:8000/video_feed/cam3?mode=fight' },
-    { id: 'Drone Cam 4', location: 'Tech Park 2 - Crowd/Stampede', status: 'online', streamUrl: 'http://localhost:8000/video_feed/cam4?mode=crowd' },
+    { id: 'Drone Cam 3', location: 'Tech Park 1 - Fight Detection', status: 'online', streamUrl: 'http://172.28.84.87:4747/video' },
+    { id: 'Drone Cam 4', location: 'Tech Park 2 - Crowd/Stampede', status: 'online', streamUrl: 'http://172.28.84.104:4747/video' },
   ];
 
   return (
