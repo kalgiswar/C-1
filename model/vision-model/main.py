@@ -31,8 +31,8 @@ load_dotenv()
 
 # Configuration
 CAMERA_ID = os.getenv("CAMERA_ID", "cam1")
-LIVESTREAM_URL = os.getenv("LIVESTREAM_URL", "ws://127.0.0.1:8000/ws/push/cam1")
-AGENT_URL = os.getenv("AGENT_URL", "http://localhost:8001/agent")
+LIVESTREAM_URL = os.getenv("LIVESTREAM_URL", f"ws://127.0.0.1:8000/ws/push/{CAMERA_ID}")
+AGENT_URL = os.getenv("AGENT_URL", "http://localhost:8005/agent")
 BUFFER_SECONDS = 10
 STAMPEDE_THRESHOLD = 5 # Number of people to trigger a stampede alert
 FPS = 15
@@ -42,7 +42,7 @@ LONGITUDE = "0.0"
 # Camera Configuration
 # Reads VISION_CAMERA_SOURCE from .env. Can be an integer (index) or string (URL).
 # Default to 0 (usually built-in webcam) if not specified.
-camera_source_env = os.getenv("VISION_CAMERA_SOURCE", "0")
+camera_source_env = os.getenv("VISION_CAMERA_SOURCE", "http://172.28.84.87:4747/video")
 if camera_source_env.isdigit():
     CAMERA_SOURCE = int(camera_source_env)
 else:
@@ -86,7 +86,7 @@ class VisionSystem:
         
         self.is_running = True
         self.last_event_time = 0
-        self.cooldown_seconds = 10 
+        self.cooldown_seconds = 60 
         
         # Create recordings directory
         self.rec_dir = Path("recordings")
@@ -244,7 +244,7 @@ class VisionSystem:
                         #         max_confidence = det["confidence"]
                         #         event_type = "Weapon"
 
-                        if event_type:
+                        if event_type and event_type != "Person":
                             current_time = time.time()
                             if current_time - self.last_event_time > self.cooldown_seconds:
                                 self.last_event_time = current_time

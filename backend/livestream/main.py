@@ -22,12 +22,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from pathfinder import Pathfinder
+
 # Store the latest frame and metadata for each camera
 # Format: {camera_id: {'image': bytes, 'metadata': dict}}
 streams: Dict[str, Dict[str, Any]] = {}
 
 # Lock for thread safety
 stream_lock = threading.Lock()
+
+pathfinder = Pathfinder(cols=20, rows=20, cell_size=30)
 
 @app.websocket("/ws/push/{camera_id}")
 async def websocket_endpoint(websocket: WebSocket, camera_id: str):
@@ -57,17 +61,42 @@ async def websocket_endpoint(websocket: WebSocket, camera_id: str):
     except Exception as e:
         print(f"Error in websocket {camera_id}: {e}")
     finally:
-        with stream_lock:
-            # Maybe keep last frame for a bit? Or delete immediately?
-            # Deleting for now to avoid stale streams
-            if camera_id in streams:
-                del streams[camera_id]
+        pass
+        # with stream_lock:
+        #     if camera_id in streams:
+        #         del streams[camera_id] # allow stale map states for now
 
 @app.get("/active_cameras")
 async def get_active_cameras():
     """Returns a list of currently active camera IDs."""
     with stream_lock:
         return {"cameras": list(streams.keys())}
+
+def generate_path_frames():
+    while True:
+        density_map = {}
+        with stream_lock:
+            for cam in ["cam1", "cam2", "cam3", "cam4"]:
+                cost = 1
+                if cam in streams:
+                    meta = streams[cam].get("metadata", {})
+                    event = meta.get("event_type")
+                    if event in ["Stampede", "Fire", "Violence"]:
+                        cost = 1500 # Obstacle
+                    elif len(meta.get("crowd", [])) >= 2:
+                        cost = 50 # Avoid
+                density_map[cam] = cost
+                
+        img_bytes = pathfinder.generate_image(density_map)
+        if img_bytes:
+             yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + img_bytes + b'\r\n')
+        
+        time.sleep(0.5)
+
+@app.get("/path_feed")
+async def path_feed():
+    return StreamingResponse(generate_path_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
     
 def process_frame(jpeg_bytes, metadata, mode):
     """Draws bounding boxes on frame based on mode."""
@@ -197,6 +226,10 @@ async def index():
                 <div class="camera-box">
                     <h3>Camera 1 (cam1)</h3>
                     <img id="stream_img" src="/video_feed/cam1?mode=fight" alt="Waiting for stream..." />
+                </div>
+                <div class="camera-box">
+                    <h3>A* Shortest Path</h3>
+                    <img src="/path_feed" alt="Path generator..." />
                 </div>
             </div>
         </body>
